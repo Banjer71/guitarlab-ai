@@ -1,0 +1,30 @@
+# Python virtual environment
+backend/.venv/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Frontend dependencies and build output
+frontend/node_modules/
+dist/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Generated audio files (keep storage folders in Git)
+storage/**/*.wav
+storage/**/*.mp3
+storage/**/*.flac
+storage/**/*.m4a
+storage/**/*.aac
+storage/**/*.ogg
+storage/**/*.opus
+storage/**/*.aiff
+storage/**/*.aif
+storage/**/*.wma
+storage/**/*.mp4
+storage/**/*.webm
+!storage/**/.gitkeep
