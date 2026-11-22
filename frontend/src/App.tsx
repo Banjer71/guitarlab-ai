@@ -32,10 +32,17 @@ function getSongFormat(song: Song) {
   return song.original_filename.split(".").pop()?.toUpperCase() ?? "Audio";
 }
 
-function formatTime(seconds: number) {
+function formatTime(seconds: number, showTenths = false) {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
   const minutes = Math.floor(safeSeconds / 60);
   const remainder = safeSeconds % 60;
+  if (showTenths) {
+    const totalTenths = Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 10)) : 0;
+    const tenthsMinutes = Math.floor(totalTenths / 600);
+    const tenthsSeconds = Math.floor(totalTenths / 10) % 60;
+    const tenths = totalTenths % 10;
+    return `${String(tenthsMinutes).padStart(2, "0")}:${String(tenthsSeconds).padStart(2, "0")}.${tenths}`;
+  }
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
@@ -51,13 +58,19 @@ function App() {
   const [uploadError, setUploadError] = useState("");
   const audioRef = useRef<HTMLAudioElement>(null);
   const playbackRateRef = useRef(1);
+  const loopStartRef = useRef<number | null>(null);
+  const loopEndRef = useRef<number | null>(null);
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
+  const [showTimeTenths, setShowTimeTenths] = useState(false);
   const [duration, setDuration] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [loopStart, setLoopStart] = useState<number | null>(null);
+  const [loopEnd, setLoopEnd] = useState<number | null>(null);
+  const [loopError, setLoopError] = useState("");
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -69,7 +82,16 @@ function App() {
     const handleLoading = () => setIsAudioLoading(true);
     const handleReady = () => setIsAudioLoading(false);
     const handleTimeUpdate = () => {
-      if (Number.isFinite(audio.currentTime)) setCurrentTime(audio.currentTime);
+      if (!Number.isFinite(audio.currentTime)) return;
+
+      const start = loopStartRef.current;
+      const end = loopEndRef.current;
+      if (start !== null && end !== null && audio.currentTime >= end) {
+        audio.currentTime = start;
+        setCurrentTime(start);
+        return;
+      }
+      setCurrentTime(audio.currentTime);
     };
     const updateDuration = () => {
       audio.playbackRate = playbackRateRef.current;
@@ -113,6 +135,43 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    function handleKeyboardSeek(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (!currentSong || duration === null || duration <= 0) return;
+
+      const target = event.target;
+      if (target instanceof Element && (
+        target.closest("input, textarea, select, button:not([data-playback-shortcut]), a, summary, audio, video, [contenteditable='true'], [role='button'], [role='slider'], [role='combobox'], [role='switch'], [role='checkbox'], [tabindex]:not([tabindex='-1']):not([data-playback-shortcut])")
+        || (target instanceof HTMLElement && target.isContentEditable)
+      )) return;
+
+      const audio = audioRef.current;
+      if (!audio) return;
+
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      const step = event.shiftKey ? 0.1 : 1;
+      let minimum = 0;
+      let maximum = duration;
+      const start = loopStartRef.current;
+      const end = loopEndRef.current;
+      if (start !== null && end !== null) {
+        minimum = start;
+        maximum = end;
+      }
+
+      const nextTime = Math.min(maximum, Math.max(minimum, audio.currentTime + direction * step));
+      audio.currentTime = nextTime;
+      setCurrentTime(nextTime);
+      setShowTimeTenths(event.shiftKey);
+      event.preventDefault();
+    }
+
+    window.addEventListener("keydown", handleKeyboardSeek);
+    return () => window.removeEventListener("keydown", handleKeyboardSeek);
+  }, [currentSong, duration]);
+
   function playSong(song: Song) {
     const audio = audioRef.current;
     if (!audio) return;
@@ -122,6 +181,11 @@ function App() {
     setIsAudioLoading(true);
     setCurrentTime(0);
     setDuration(null);
+    loopStartRef.current = null;
+    loopEndRef.current = null;
+    setLoopStart(null);
+    setLoopEnd(null);
+    setLoopError("");
     audio.pause();
     audio.src = `http://127.0.0.1:8000/songs/${encodeURIComponent(song.id)}/audio`;
     audio.load();
@@ -165,6 +229,7 @@ function App() {
 
     audio.currentTime = nextTime;
     setCurrentTime(nextTime);
+    setShowTimeTenths(false);
   }
 
   function handlePlaybackRateChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -175,6 +240,45 @@ function App() {
     playbackRateRef.current = nextRate;
     setPlaybackRate(nextRate);
     if (audio) audio.playbackRate = nextRate;
+  }
+
+  function handleSetLoopStart() {
+    const audio = audioRef.current;
+    if (!audio || !currentSong || !Number.isFinite(audio.currentTime)) return;
+
+    const nextStart = audio.currentTime;
+    loopStartRef.current = nextStart;
+    setLoopStart(nextStart);
+    if (loopEndRef.current !== null && loopEndRef.current <= nextStart) {
+      loopEndRef.current = null;
+      setLoopEnd(null);
+      setLoopError("Set B after A to create a valid loop.");
+      return;
+    }
+    setLoopError("");
+  }
+
+  function handleSetLoopEnd() {
+    const audio = audioRef.current;
+    if (!audio || !currentSong || !Number.isFinite(audio.currentTime)) return;
+
+    const nextEnd = audio.currentTime;
+    if (loopStartRef.current === null || nextEnd <= loopStartRef.current) {
+      setLoopError("Set B after A to create a valid loop.");
+      return;
+    }
+
+    loopEndRef.current = nextEnd;
+    setLoopEnd(nextEnd);
+    setLoopError("");
+  }
+
+  function handleClearLoop() {
+    loopStartRef.current = null;
+    loopEndRef.current = null;
+    setLoopStart(null);
+    setLoopEnd(null);
+    setLoopError("");
   }
 
   const fetchSongs = useCallback(async () => {
@@ -289,6 +393,17 @@ function App() {
   }
 
 
+  const loopHighlightActive = duration !== null && duration > 0 && loopStart !== null && loopEnd !== null;
+  const progressPercent = duration !== null && duration > 0
+    ? Math.min(100, (currentTime / duration) * 100)
+    : 0;
+  const loopStartPercent = loopHighlightActive && duration !== null && loopStart !== null
+    ? Math.min(100, Math.max(0, (loopStart / duration) * 100))
+    : 0;
+  const loopEndPercent = loopHighlightActive && duration !== null && loopEnd !== null
+    ? Math.min(100, Math.max(0, (loopEnd / duration) * 100))
+    : 0;
+
   return (
     <div className="app">
       <header className="header">
@@ -363,6 +478,7 @@ function App() {
                     </div>
                     <button
                       className="song-play-button"
+                      data-playback-shortcut
                       type="button"
                       onClick={() => handleSongButtonClick(song)}
                     >
@@ -379,7 +495,7 @@ function App() {
           <h3 id="player-heading">Now playing</h3>
           <p className="player-song-name">{currentSong?.original_filename ?? "Select a song from your library."}</p>
           <div className="player-controls">
-            <button className="player-control" type="button" onClick={togglePlayback} disabled={!currentSong}>
+            <button className="player-control" data-playback-shortcut type="button" onClick={togglePlayback} disabled={!currentSong}>
               {isAudioLoading ? "Loading…" : isPlaying ? "Pause" : "Play"}
             </button>
             <label className="playback-speed">
@@ -391,20 +507,62 @@ function App() {
               </select>
             </label>
           </div>
+          <div className="loop-controls" aria-label="A–B loop controls">
+            <button className="loop-control" data-playback-shortcut type="button" onClick={handleSetLoopStart} disabled={!currentSong}>
+              Set A
+            </button>
+            <button className="loop-control" data-playback-shortcut type="button" onClick={handleSetLoopEnd} disabled={!currentSong}>
+              Set B
+            </button>
+            <button
+              className="loop-control loop-clear"
+              data-playback-shortcut
+              type="button"
+              onClick={handleClearLoop}
+              disabled={!currentSong || (loopStart === null && loopEnd === null)}
+            >
+              Clear loop
+            </button>
+            <span className="loop-points">
+              A: {loopStart === null ? "--:--" : formatTime(loopStart)}
+              <span aria-hidden="true"> · </span>
+              B: {loopEnd === null ? "--:--" : formatTime(loopEnd)}
+            </span>
+          </div>
+          {loopError && <p className="playback-error" role="alert">{loopError}</p>}
           <div className="playback-progress">
-            <input
-              className="playback-seek"
-              type="range"
-              min="0"
-              max={duration ?? 0}
-              step="0.1"
-              value={duration === null ? 0 : Math.min(currentTime, duration)}
-              onChange={handleSeek}
-              disabled={!currentSong || duration === null || duration <= 0}
-              aria-label="Seek through song"
-            />
+            <div
+              className="playback-track"
+            >
+              <div className="playback-track-visual" aria-hidden="true">
+                <span className="playback-track-elapsed" style={{ width: `${progressPercent}%` }} />
+                {loopHighlightActive && (
+                  <span
+                    className="playback-track-loop"
+                    style={{
+                      left: `${loopStartPercent}%`,
+                      width: `${Math.max(0, loopEndPercent - loopStartPercent)}%`,
+                    }}
+                  />
+                )}
+              </div>
+              <input
+                className="playback-seek"
+                type="range"
+                min="0"
+                max={duration ?? 0}
+                step="0.1"
+                value={duration === null ? 0 : Math.min(currentTime, duration)}
+                onChange={handleSeek}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") setShowTimeTenths(true);
+                }}
+                disabled={!currentSong || duration === null || duration <= 0}
+                aria-label="Seek through song"
+              />
+            </div>
             <div className="playback-times" aria-live="off">
-              <span>{formatTime(currentTime)}</span>
+              <span>{formatTime(currentTime, showTimeTenths)}</span>
               <span>{duration === null ? "--:--" : formatTime(duration)}</span>
             </div>
           </div>
