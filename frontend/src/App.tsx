@@ -50,12 +50,14 @@ function App() {
   const [uploadMessage, setUploadMessage] = useState("");
   const [uploadError, setUploadError] = useState("");
   const audioRef = useRef<HTMLAudioElement>(null);
+  const playbackRateRef = useRef(1);
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState<number | null>(null);
+  const [playbackRate, setPlaybackRate] = useState(1);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -70,6 +72,7 @@ function App() {
       if (Number.isFinite(audio.currentTime)) setCurrentTime(audio.currentTime);
     };
     const updateDuration = () => {
+      audio.playbackRate = playbackRateRef.current;
       setDuration(
         audio.readyState >= HTMLMediaElement.HAVE_METADATA && Number.isFinite(audio.duration)
           ? audio.duration
@@ -122,6 +125,7 @@ function App() {
     audio.pause();
     audio.src = `http://127.0.0.1:8000/songs/${encodeURIComponent(song.id)}/audio`;
     audio.load();
+    audio.playbackRate = playbackRateRef.current;
     void audio.play().catch(() => {
       setIsPlaying(false);
       setIsAudioLoading(false);
@@ -161,6 +165,16 @@ function App() {
 
     audio.currentTime = nextTime;
     setCurrentTime(nextTime);
+  }
+
+  function handlePlaybackRateChange(event: ChangeEvent<HTMLSelectElement>) {
+    const nextRate = Number(event.currentTarget.value);
+    const audio = audioRef.current;
+    if (!Number.isFinite(nextRate)) return;
+
+    playbackRateRef.current = nextRate;
+    setPlaybackRate(nextRate);
+    if (audio) audio.playbackRate = nextRate;
   }
 
   const fetchSongs = useCallback(async () => {
@@ -364,9 +378,19 @@ function App() {
         <section className="player-card" aria-labelledby="player-heading">
           <h3 id="player-heading">Now playing</h3>
           <p className="player-song-name">{currentSong?.original_filename ?? "Select a song from your library."}</p>
-          <button className="player-control" type="button" onClick={togglePlayback} disabled={!currentSong}>
-            {isAudioLoading ? "Loading…" : isPlaying ? "Pause" : "Play"}
-          </button>
+          <div className="player-controls">
+            <button className="player-control" type="button" onClick={togglePlayback} disabled={!currentSong}>
+              {isAudioLoading ? "Loading…" : isPlaying ? "Pause" : "Play"}
+            </button>
+            <label className="playback-speed">
+              <span>Speed</span>
+              <select value={playbackRate} onChange={handlePlaybackRateChange} aria-label="Playback speed">
+                <option value="1">1.0x</option>
+                <option value="0.75">0.75x</option>
+                <option value="0.5">0.5x</option>
+              </select>
+            </label>
+          </div>
           <div className="playback-progress">
             <input
               className="playback-seek"
