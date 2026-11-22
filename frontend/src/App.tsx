@@ -1,5 +1,14 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import './App.css'
+
+interface Song {
+  id: string;
+  original_filename: string;
+  stored_filename: string;
+  size_bytes: number;
+  content_type: string;
+  uploaded_at: string;
+}
 
 type SongUploadResponse = {
   id: string;
@@ -15,13 +24,162 @@ function formatFileSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MiB`;
 }
 
+function formatUploadDate(uploadedAt: string) {
+  return new Date(uploadedAt).toLocaleString();
+}
+
+function getSongFormat(song: Song) {
+  return song.original_filename.split(".").pop()?.toUpperCase() ?? "Audio";
+}
+
+function formatTime(seconds: number) {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
 function App() {
-    const [backendStatus, setBackendStatus] = useState("Checking...");
+  const [backendStatus, setBackendStatus] = useState("Checking...");
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [songsLoading, setSongsLoading] = useState(true);
+  const [songsError, setSongsError] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadMessage, setUploadMessage] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [currentSong, setCurrentSong] = useState<Song | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState<number | null>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => setIsPlaying(false);
+    const handleLoading = () => setIsAudioLoading(true);
+    const handleReady = () => setIsAudioLoading(false);
+    const handleTimeUpdate = () => {
+      if (Number.isFinite(audio.currentTime)) setCurrentTime(audio.currentTime);
+    };
+    const updateDuration = () => {
+      setDuration(
+        audio.readyState >= HTMLMediaElement.HAVE_METADATA && Number.isFinite(audio.duration)
+          ? audio.duration
+          : null,
+      );
+      if (Number.isFinite(audio.currentTime)) setCurrentTime(audio.currentTime);
+    };
+    const handleError = () => {
+      setIsPlaying(false);
+      setIsAudioLoading(false);
+      setPlaybackError("Could not play this song. Check the backend connection and try again.");
+    };
+
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("loadstart", handleLoading);
+    audio.addEventListener("waiting", handleLoading);
+    audio.addEventListener("playing", handleReady);
+    audio.addEventListener("canplay", handleReady);
+    audio.addEventListener("error", handleError);
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("loadedmetadata", updateDuration);
+    audio.addEventListener("durationchange", updateDuration);
+
+    return () => {
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("loadstart", handleLoading);
+      audio.removeEventListener("waiting", handleLoading);
+      audio.removeEventListener("playing", handleReady);
+      audio.removeEventListener("canplay", handleReady);
+      audio.removeEventListener("error", handleError);
+      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      audio.removeEventListener("loadedmetadata", updateDuration);
+      audio.removeEventListener("durationchange", updateDuration);
+    };
+  }, []);
+
+  function playSong(song: Song) {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    setCurrentSong(song);
+    setPlaybackError("");
+    setIsAudioLoading(true);
+    setCurrentTime(0);
+    setDuration(null);
+    audio.pause();
+    audio.src = `http://127.0.0.1:8000/songs/${encodeURIComponent(song.id)}/audio`;
+    audio.load();
+    void audio.play().catch(() => {
+      setIsPlaying(false);
+      setIsAudioLoading(false);
+      setPlaybackError("Playback could not start. Check the backend connection and try again.");
+    });
+  }
+
+  function togglePlayback() {
+    const audio = audioRef.current;
+    if (!audio || !currentSong) return;
+
+    if (audio.paused) {
+      setPlaybackError("");
+      setIsAudioLoading(true);
+      void audio.play().catch(() => {
+        setIsPlaying(false);
+        setIsAudioLoading(false);
+        setPlaybackError("Playback could not start. Check the backend connection and try again.");
+      });
+    } else {
+      audio.pause();
+    }
+  }
+
+  function handleSongButtonClick(song: Song) {
+    if (currentSong?.id === song.id) {
+      togglePlayback();
+    } else {
+      playSong(song);
+    }
+  }
+
+  function handleSeek(event: ChangeEvent<HTMLInputElement>) {
+    const audio = audioRef.current;
+    const nextTime = Number(event.currentTarget.value);
+    if (!audio || !Number.isFinite(nextTime) || duration === null) return;
+
+    audio.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  }
+
+  const fetchSongs = useCallback(async () => {
+    setSongsLoading(true);
+    setSongsError("");
+
+    try {
+      const response = await fetch("http://127.0.0.1:8000/songs");
+      if (!response.ok) {
+        throw new Error(`Could not load the song library (HTTP ${response.status}).`);
+      }
+      const songList = (await response.json()) as Song[];
+      setSongs(songList);
+    } catch {
+      setSongsError("Could not load your song library. Check that the backend is running, then refresh.");
+    } finally {
+      setSongsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetch("http://127.0.0.1:8000/health")
@@ -34,6 +192,10 @@ function App() {
       .then((data) => setBackendStatus(data.status))
       .catch(() => setBackendStatus("Disconnected"));
   }, []);
+
+  useEffect(() => {
+    void fetchSongs();
+  }, [fetchSongs]);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
@@ -85,6 +247,7 @@ function App() {
         const result = JSON.parse(request.responseText) as SongUploadResponse;
         setUploadProgress(100);
         setUploadMessage(`Uploaded “${result.original_filename}” successfully.`);
+        void fetchSongs();
         return;
       }
 
@@ -148,6 +311,81 @@ function App() {
             <h3>📖 Practice Studio</h3>
             <p>Save licks, study tablature and create exercises.</p>
           </div>
+        </section>
+
+        <section className="song-library" aria-labelledby="library-heading">
+          <div className="library-heading-row">
+            <div>
+              <h3 id="library-heading">Song Library</h3>
+              <p className="library-description">Your uploaded songs, ready for future study.</p>
+            </div>
+            <button
+              className="refresh-button"
+              type="button"
+              onClick={() => void fetchSongs()}
+              disabled={songsLoading}
+            >
+              {songsLoading ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
+
+          {songsLoading && <p className="library-message" role="status">Loading your song library…</p>}
+          {songsError && <p className="library-error" role="alert">{songsError}</p>}
+          {!songsLoading && !songsError && songs.length === 0 && (
+            <p className="library-empty">No songs yet. Upload an MP3 or WAV file to get started.</p>
+          )}
+          {songs.length > 0 && (
+            <ul className="song-list">
+              {songs.map((song) => (
+                <li className="song-item" key={song.id}>
+                  <div className="song-row">
+                    <div className="song-info">
+                      <div className="song-name">{song.original_filename}</div>
+                      <div className="song-details">
+                        <span>{getSongFormat(song)}</span>
+                        <span>{formatFileSize(song.size_bytes)}</span>
+                        <span>Uploaded {formatUploadDate(song.uploaded_at)}</span>
+                      </div>
+                    </div>
+                    <button
+                      className="song-play-button"
+                      type="button"
+                      onClick={() => handleSongButtonClick(song)}
+                    >
+                      {currentSong?.id === song.id && isPlaying ? "Pause" : "Play"}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="player-card" aria-labelledby="player-heading">
+          <h3 id="player-heading">Now playing</h3>
+          <p className="player-song-name">{currentSong?.original_filename ?? "Select a song from your library."}</p>
+          <button className="player-control" type="button" onClick={togglePlayback} disabled={!currentSong}>
+            {isAudioLoading ? "Loading…" : isPlaying ? "Pause" : "Play"}
+          </button>
+          <div className="playback-progress">
+            <input
+              className="playback-seek"
+              type="range"
+              min="0"
+              max={duration ?? 0}
+              step="0.1"
+              value={duration === null ? 0 : Math.min(currentTime, duration)}
+              onChange={handleSeek}
+              disabled={!currentSong || duration === null || duration <= 0}
+              aria-label="Seek through song"
+            />
+            <div className="playback-times" aria-live="off">
+              <span>{formatTime(currentTime)}</span>
+              <span>{duration === null ? "--:--" : formatTime(duration)}</span>
+            </div>
+          </div>
+          {playbackError && <p className="playback-error" role="alert">{playbackError}</p>}
+          <audio ref={audioRef} preload="none" />
         </section>
 
         <section className="upload-card" aria-labelledby="upload-heading">

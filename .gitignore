@@ -28,3 +28,4 @@ storage/**/*.wma
 storage/**/*.mp4
 storage/**/*.webm
 !storage/**/.gitkeep
+storage/songs/metadata/*.json
