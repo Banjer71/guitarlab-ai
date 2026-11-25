@@ -29,3 +29,5 @@ storage/**/*.mp4
 storage/**/*.webm
 !storage/**/.gitkeep
 storage/songs/metadata/*.json
+storage/waveforms/*.json
+storage/waveforms/*.tmp
